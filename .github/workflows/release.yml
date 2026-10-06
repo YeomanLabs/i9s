@@ -1,0 +1,75 @@
+# Builds i9s for Windows, macOS and Linux and publishes a GitHub release.
+# Push a tag like v0.1.0. macOS builds need cgo (Keychain token cache), so they
+# run on a Mac; everything else cross-compiles on Linux.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: go vet ./... && go test ./...
+
+  build-cross:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - name: Build Windows and Linux
+        env: { CGO_ENABLED: '0' }
+        run: |
+          V=${GITHUB_REF_NAME}
+          mkdir -p out
+          for t in windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            os=${t%/*}; arch=${t#*/}; ext=""; [ "$os" = windows ] && ext=".exe"
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$V" -o "dist/i9s$ext" .
+            if [ "$os" = windows ]; then (cd dist && zip -q "../out/i9s_${os}_${arch}.zip" "i9s$ext"); else tar -czf "out/i9s_${os}_${arch}.tar.gz" -C dist "i9s$ext"; fi
+            rm -rf dist
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: cross, path: out/* }
+
+  build-mac:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - name: Build macOS (arm64 and amd64)
+        env: { CGO_ENABLED: '1' }
+        run: |
+          V=${GITHUB_REF_NAME}
+          mkdir -p out
+          for arch in arm64 amd64; do
+            GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$V" -o dist/i9s .
+            tar -czf "out/i9s_darwin_${arch}.tar.gz" -C dist i9s
+            rm -rf dist
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: out/* }
+
+  publish:
+    needs: [build-cross, build-mac]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - run: cd out && sha256sum * > checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
