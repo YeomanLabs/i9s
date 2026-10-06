@@ -114,4 +114,4 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) and [Lip Glo
 
 ## License
 
-MIT © YeomanLabs
+MIT. See [LICENSE](LICENSE).
