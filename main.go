@@ -33,6 +33,7 @@ func main() {
 		refresh  = flag.Duration("refresh", 60*time.Second, "auto-refresh interval for lists (0 to turn off)")
 		signOut  = flag.Bool("sign-out", false, "forget the signed-in account and exit")
 		showVer  = flag.Bool("version", false, "print the version and exit")
+		check    = flag.Bool("check", false, "sign in, try each data source once, print what works, and exit")
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "i9s %s: a terminal UI for Microsoft Intune\n\nUsage:\n  i9s [flags] [resource] [filter]\n\nResources: devices (dv), users (us), apps (ap), pulse (pu)\n\nFlags:\n", version)
@@ -72,10 +73,84 @@ func main() {
 		src = graph.NewSource(c, name, sess.Account)
 	}
 
+	if *check {
+		os.Exit(runCheck(src))
+	}
+
 	m := ui.New(src, ui.Options{Refresh: *refresh, Start: strings.Join(flag.Args(), " ")})
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		fail(err)
 	}
+}
+
+// runCheck is a non-interactive health check: one call per data source.
+func runCheck(src intune.Source) int {
+	fmt.Printf("i9s %s · %s · %s\n\n", version, src.Tenant(), src.Account())
+	failed := 0
+	step := func(name string, fn func(ctx context.Context) (string, error)) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		start := time.Now()
+		msg, err := fn(ctx)
+		took := time.Since(start).Round(10 * time.Millisecond)
+		if err != nil {
+			failed++
+			fmt.Printf("  FAIL  %-18s %v\n", name, err)
+			return
+		}
+		fmt.Printf("  ok    %-18s %s (%s)\n", name, msg, took)
+	}
+
+	var devices []intune.Device
+	var apps []intune.App
+	step("devices", func(ctx context.Context) (string, error) {
+		d, err := src.Devices(ctx)
+		devices = d
+		return fmt.Sprintf("%d Windows devices", len(d)), err
+	})
+	step("device detail", func(ctx context.Context) (string, error) {
+		if len(devices) == 0 {
+			return "skipped (no devices)", nil
+		}
+		d, err := src.DeviceDetail(ctx, devices[0].ID)
+		defender := "no Defender status"
+		if d.Defender != nil {
+			defender = "Defender " + d.Defender.State
+		}
+		return fmt.Sprintf("%s: %s, %.0f GB free", d.Name, defender, d.FreeStorageGB), err
+	})
+	step("users", func(ctx context.Context) (string, error) {
+		u, err := src.Users(ctx)
+		withMFA, withSignIn := 0, 0
+		for _, x := range u {
+			if x.MFA != "" {
+				withMFA++
+			}
+			if !x.LastSignIn.IsZero() {
+				withSignIn++
+			}
+		}
+		return fmt.Sprintf("%d people (%d with MFA data, %d with sign-in activity)", len(u), withMFA, withSignIn), err
+	})
+	step("apps", func(ctx context.Context) (string, error) {
+		a, err := src.Apps(ctx)
+		apps = a
+		return fmt.Sprintf("%d assigned Windows apps", len(a)), err
+	})
+	step("app install status", func(ctx context.Context) (string, error) {
+		if len(apps) == 0 {
+			return "skipped (no apps)", nil
+		}
+		s, err := src.AppStatus(ctx, apps[0].ID)
+		return fmt.Sprintf("%s: %d devices", apps[0].Name, len(s)), err
+	})
+	fmt.Println()
+	if failed > 0 {
+		fmt.Printf("%d check(s) failed.\n", failed)
+		return 1
+	}
+	fmt.Println("Everything i9s reads is working.")
+	return 0
 }
 
 func fail(err error) {

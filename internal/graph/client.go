@@ -51,14 +51,25 @@ func New(token TokenFunc) *Client {
 }
 
 func (c *Client) url(path string) string {
-	if strings.HasPrefix(path, "https://") {
-		return path
+	if strings.HasPrefix(path, "https://") || strings.HasPrefix(path, c.Base) {
+		return path // nextLinks come back already encoded
 	}
 	p := strings.TrimPrefix(path, "/")
 	if !strings.HasPrefix(p, "beta/") && !strings.HasPrefix(p, "v1.0/") {
 		p = "v1.0/" + p
 	}
-	return c.Base + "/" + p
+	return c.Base + "/" + encodeQuery(p)
+}
+
+// encodeQuery percent-encodes the characters OData queries use but URLs
+// can't carry raw: Graph answers a bare space with 400 Bad Request.
+func encodeQuery(p string) string {
+	path, query, ok := strings.Cut(p, "?")
+	if !ok {
+		return p
+	}
+	r := strings.NewReplacer(" ", "%20", "'", "%27", "\"", "%22", "#", "%23")
+	return path + "?" + r.Replace(query)
 }
 
 // Do sends a request and decodes a JSON response into out (which may be nil).

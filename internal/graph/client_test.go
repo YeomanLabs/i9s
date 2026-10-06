@@ -48,6 +48,20 @@ func TestAllFollowsNextLinkAndRetriesThrottling(t *testing.T) {
 	}
 }
 
+func TestQueriesAreEncoded(t *testing.T) {
+	var raw string
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw = r.RequestURI
+		json.NewEncoder(w).Encode(map[string]any{"value": []any{}})
+	})
+	if _, err := All[struct{}](context.Background(), c, "deviceManagement/managedDevices?$filter=operatingSystem eq 'Windows'&$select=id", nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(raw, " '") || !strings.Contains(raw, "operatingSystem%20eq%20%27Windows%27") {
+		t.Fatalf("query sent unencoded: %s", raw)
+	}
+}
+
 func TestErrorsCarryGraphMessage(t *testing.T) {
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
